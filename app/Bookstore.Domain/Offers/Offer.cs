@@ -50,7 +50,7 @@ namespace Bookstore.Domain.Offers
 
         public string? Summary { get; set; }
 
-        [Column("OfferStatus")]
+        [Column("offerstatus")]
         public OfferStatus OfferStatus { get; set; } = OfferStatus.PendingApproval;
 
         public string? Comment { get; set; }

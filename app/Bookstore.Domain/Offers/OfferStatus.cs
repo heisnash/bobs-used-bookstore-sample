@@ -7,7 +7,7 @@ namespace Bookstore.Domain.Offers
         [Description("Pending Approval")]
         PendingApproval = 0,
 
-        [Description("Approved/Awaiting Shipment from Customer")]
+        [Description("Approved/Awaiting Shipment from customer")]
         Approved = 1,
 
         [Description("Shipment Receipt Confirmed")]

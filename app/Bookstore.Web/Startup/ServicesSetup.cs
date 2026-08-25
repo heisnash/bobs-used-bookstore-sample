@@ -1,11 +1,10 @@
-﻿using Amazon.Rekognition;
+using Amazon.Rekognition;
 using Amazon.S3;
 using Amazon.SecretsManager.Model;
 using Amazon.SecretsManager;
 using Bookstore.Data;
 using Bookstore.Domain.AdminUser;
 using Microsoft.AspNetCore.Builder;
-using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -13,6 +12,7 @@ using System.Text.Json;
 using System;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Authorization;
+using Npgsql;
 
 namespace Bookstore.Web.Startup
 {
@@ -31,7 +31,7 @@ namespace Bookstore.Web.Startup
             builder.Services.AddAWSService<IAmazonRekognition>();
 
             var connString = GetDatabaseConnectionString(builder.Configuration);
-            builder.Services.AddDbContext<ApplicationDbContext>(option => option.UseSqlServer(connString));
+            builder.Services.AddDbContext<ApplicationDbContext>(option => option.UseNpgsql(connString));
             builder.Services.AddSession();
 
             return builder;
@@ -41,13 +41,9 @@ namespace Bookstore.Web.Startup
         // attempt to build it from data in Secrets Manager
         private static string GetDatabaseConnectionString(ConfigurationManager configuration)
         {
-            // This is the key of a string value in Parameter Store containing the name of the
-            // secret in Secrets Manager that in turn contains the credentials of the database in
-            // Amazon RDS. The reason for the indirection is that a secret name is suffixed automatically
-            // by the CDK with a random string. Using a fixed Parameter Store value to point to the
-            // randomly-named secret insulates the application from variability in the name of
-            // the secret.
-            const string DbSecretsParameterName = "dbsecretsname";
+            // The secret name is fixed (no indirection via Parameter Store needed for the
+            // Aurora PostgreSQL target). The secret contains host, port, username, and password.
+            const string DbSecretName = "atx-db-modernization-nx-bookstore-aurora-pg-target-eCVMMK";
 
             var connString = configuration.GetConnectionString("BookstoreDbDefaultConnection");
             if (!string.IsNullOrEmpty(connString))
@@ -58,14 +54,8 @@ namespace Bookstore.Web.Startup
 
             try
             {
-                var dbSecretId = configuration[DbSecretsParameterName];
-                Console.WriteLine($"Reading db credentials from secret {dbSecretId}");
+                Console.WriteLine($"Reading db credentials from secret {DbSecretName}");
 
-                // Read the db secrets posted into Secrets Manager by the CDK. The secret provides the host,
-                // port, userid, and password, which we format into the final connection string for SQL Server.
-                // For this code to work locally, appsettings.json must contain an AWS object with profile and
-                // region info. When deployed to an EC2 instance, credentials and region will be inferred from
-                // the instance profile applied to the instance.
                 IAmazonSecretsManager secretsManagerClient;
                 var options = configuration.GetAWSOptions();
                 if (options != null)
@@ -78,9 +68,10 @@ namespace Bookstore.Web.Startup
                     // deployed mode using credentials/region inferred on host
                     secretsManagerClient = new AmazonSecretsManagerClient();
                 }
+
                 var response = secretsManagerClient.GetSecretValueAsync(new GetSecretValueRequest
                 {
-                    SecretId = dbSecretId
+                    SecretId = DbSecretName
                 }).Result;
 
                 var dbSecrets = JsonSerializer.Deserialize<DbSecrets>(response.SecretString, new JsonSerializerOptions
@@ -88,23 +79,26 @@ namespace Bookstore.Web.Startup
                     PropertyNameCaseInsensitive = true
                 });
 
-                var partialConnString = $"Server={dbSecrets.Host},{dbSecrets.Port}; Initial Catalog=BobsUsedBookStore;MultipleActiveResultSets=true; Integrated Security=false;TrustServerCertificate=true;";
-
-                var builder = new SqlConnectionStringBuilder(partialConnString)
+                var npgsqlBuilder = new NpgsqlConnectionStringBuilder
                 {
-                    UserID = dbSecrets.Username,
-                    Password = dbSecrets.Password
+                    Host = dbSecrets.Host,
+                    Port = dbSecrets.Port,
+                    Database = "postgres",
+                    SearchPath = "bobsusedbookstore_dbo",
+                    Username = dbSecrets.Username,
+                    Password = dbSecrets.Password,
+                    SslMode = SslMode.Require
                 };
 
-                connString = builder.ConnectionString;
+                connString = npgsqlBuilder.ConnectionString;
             }
             catch (AmazonSecretsManagerException e)
             {
-                Console.WriteLine($"Failed to read secret {configuration[DbSecretsParameterName]}, error {e.Message}, inner {e.InnerException.Message}");
+                Console.WriteLine($"Failed to read secret {DbSecretName}, error {e.Message}, inner {e.InnerException?.Message}");
             }
             catch (JsonException e)
             {
-                Console.WriteLine($"Failed to parse content for secret {configuration[DbSecretsParameterName]}, error {e.Message}");
+                Console.WriteLine($"Failed to parse content for secret {DbSecretName}, error {e.Message}");
             }
 
             return connString;

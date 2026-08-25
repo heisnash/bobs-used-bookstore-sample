@@ -1,0 +1,276 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'IAM role and instance profile for EC2 instances to build .NET applications'
+
+Parameters:
+  CreateS3Bucket:
+    Type: String
+    Description: 'Whether to create an S3 bucket'
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+
+Conditions:
+  CreateS3Bucket: !Equals [!Ref CreateS3Bucket, 'true']
+
+Mappings:
+  Constants:
+    S3BucketName:
+      Value: 'aws-transform-deployment-bucket'
+
+Resources:
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateS3Bucket
+    Properties:
+      BucketName: !Sub
+        - '${BucketName}-${AWS::AccountId}-${AWS::Region}'
+        - BucketName: !FindInMap [ Constants, S3BucketName, Value ]
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteObjectsAfter30Days
+            Status: Enabled
+            ExpirationInDays: 30
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: CreatedFor
+          Value: AWSTransform
+
+  EC2BuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'AWSTransform-Deploy-Builder-Instance-Role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: CreatedFor
+          Value: AWSTransform
+      Policies:
+        - PolicyName: S3AccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: 
+                  - !Sub 
+                    - 'arn:aws:s3:::${BucketName}-${AWS::AccountId}-${AWS::Region}/*'
+                    - BucketName: !FindInMap [Constants, S3BucketName, Value]
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: 
+                  - !Sub 
+                    - 'arn:aws:s3:::${BucketName}-${AWS::AccountId}-${AWS::Region}'
+                    - BucketName: !FindInMap [Constants, S3BucketName, Value]
+        - PolicyName: KMSAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:GenerateDataKey
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                Resource: '*'
+        - PolicyName: ECRAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:CompleteLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:InitiateLayerUpload
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:PutImage
+                  - ecr:BatchGetImage
+                  - ecr:DescribeImages
+                Resource: 'arn:aws:ecr:*:*:repository/awstransform*'
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+
+  EC2BuildInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub 'AWSTransform-Deploy-Builder-Instance-Role'
+      Roles:
+        - !Ref EC2BuildRole
+
+  EC2AppRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'AWSTransform-Deploy-App-Instance-Role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: CreatedFor
+          Value: AWSTransform
+      Policies:
+        - PolicyName: S3DownloadPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: 
+                  - !Sub 
+                    - 'arn:aws:s3:::${BucketName}-${AWS::AccountId}-${AWS::Region}/*'
+                    - BucketName: !FindInMap [Constants, S3BucketName, Value]
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: 
+                  - !Sub 
+                    - 'arn:aws:s3:::${BucketName}-${AWS::AccountId}-${AWS::Region}'
+                    - BucketName: !FindInMap [Constants, S3BucketName, Value]
+        - PolicyName: KMSDecryptPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                  - kms:DescribeKey
+                Resource: '*'
+                Condition:
+                  StringLike:
+                    kms:ViaService:
+                      - "s3.*.amazonaws.com"
+
+        - PolicyName: SecretsManagerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'aws:ResourceTag/Project': 'atx-db-modernization'
+                    'aws:ResourceTag/Owner': 'database-connector'
+
+  EC2AppInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub 'AWSTransform-Deploy-App-Instance-Role'
+      Roles:
+        - !Ref EC2AppRole
+
+  EcsTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'AWSTransform-Deploy-ECS-Task-Role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: CreatedFor
+          Value: AWSTransform
+      Policies:
+        - PolicyName: SecretsManagerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'aws:ResourceTag/Project': 'atx-db-modernization'
+                    'aws:ResourceTag/Owner': 'database-connector'
+
+  EcsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'AWSTransform-Deploy-ECS-Execution-Role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Tags:
+        - Key: CreatedFor
+          Value: AWSTransform
+
+  ManualDeploymentRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: 'AWSTransform-Deploy-Manual-Deployment-Role'
+      Tags:
+        - Key: CreatedFor
+          Value: AWSTransform
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSTransformApplicationDeploymentPolicy
+        - arn:aws:iam::aws:policy/service-role/AWSTransformApplicationECSDeploymentPolicy
+
+Outputs:
+  S3BucketName:
+    Condition: CreateS3Bucket
+    Description: 'Name of the created S3 bucket'
+    Value: !Ref S3Bucket
+
+  BuildRoleArn:
+    Description: 'ARN of the EC2 build role'
+    Value: !GetAtt EC2BuildRole.Arn
+
+  BuildInstanceProfileName:
+    Description: 'Name of the build instance profile'
+    Value: !Ref EC2BuildInstanceProfile
+
+  AppRoleArn:
+    Description: 'ARN of the EC2 app role'
+    Value: !GetAtt EC2AppRole.Arn
+  
+  AppInstanceProfileName:
+    Description: 'Name of the app instance profile'
+    Value: !Ref EC2AppInstanceProfile
+
+  EcsTaskRoleArn:
+    Description: 'ARN of the ECS task role'
+    Value: !GetAtt EcsTaskRole.Arn
+  
+  EcsExecutionRoleArn:
+    Description: 'ARN of the ECS execution role'
+    Value: !GetAtt EcsExecutionRole.Arn

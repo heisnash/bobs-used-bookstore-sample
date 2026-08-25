@@ -1,0 +1,150 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS Transform ECS Application Infrastructure'
+
+Parameters:
+  ApplicationName:
+    Type: String
+    Description: 'Desired name for the application'
+    Default: 'Bookstore-Web'
+
+  ECSClusterName:
+    Type: String
+    Description: 'The ECS Cluster into which to launch resources'
+
+  SubnetIds:
+    Type: String
+    Description: 'Subnet Ids for the ECS Service'
+
+  SecurityGroupIds:
+    Type: String
+    Description: 'Security Group Ids for the ECS Service'
+    Default: 'sg-05909c42dd6da4764'
+
+  ContainerImageUri:
+    Type: String
+    Description: 'Image URI of application container'
+
+  ContainerCpu:
+    Type: Number
+    Description: 'CPU for the ECS Task. 1024 is 1 CPU'
+    Default: 256
+    AllowedValues: [256, 512, 1024, 2048, 4096, 8192, 16384]
+
+  ContainerMemory:
+    Type: Number
+    Description: 'Memory in megabytes (MB) for the ECS Task'
+    Default: 512
+
+  ContainerStorage:
+    Type: Number
+    Description: 'Ephemeral storage (GB) for the ECS task'
+    Default: 30
+    MinValue: 20
+    MaxValue: 200
+
+  ContainerPort:
+    Type: Number
+    Description: 'Port which the application expects traffic on'
+    Default: 5000
+    MinValue: 1
+    MaxValue: 65535
+
+  OperatingSystem:
+    Type: String
+    Description: 'Container operating system'
+    Default: 'Linux'
+
+  ECSTaskCount:
+    Type: Number
+    Description: 'Number of Tasks ECS will keep active'
+    Default: 1
+    MinValue: 1
+
+  ECSExecutionRole:
+    Type: String
+    Description: 'IAM Role for the ECS Service'
+    Default: 'AWSTransform-Deploy-ECS-Execution-Role'
+
+  ECSTaskRole:
+    Type: String
+    Description: 'IAM Role for running ECS Tasks'
+    Default: 'AWSTransform-Deploy-ECS-Task-Role'
+
+Resources:
+  CloudWatchLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/ecs/AWSTransform-Bookstore-Web-Logs-686569-326a14
+      RetentionInDays: 14
+      Tags:
+        - Key: ResourceName
+          Value: !Sub AWSTransform-Bookstore-Web-Logs-686569-326a14
+        - Key: CreatedFor
+          Value: AWSTransform
+
+  ECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    DependsOn: CloudWatchLogGroup
+    Properties:
+      Family: !Sub AWSTransform-Bookstore-Web-Task-Definition-686569-326a14
+      Cpu: !Ref ContainerCpu
+      Memory: !Ref ContainerMemory
+      EphemeralStorage:
+        SizeInGiB: !Ref ContainerStorage
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !Ref ECSExecutionRole
+      TaskRoleArn: !Ref ECSTaskRole
+      RuntimePlatform:
+        OperatingSystemFamily: !Ref OperatingSystem
+      ContainerDefinitions:
+        - Name: !Ref ApplicationName
+          Image: !Ref ContainerImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref CloudWatchLogGroup
+              awslogs-stream-prefix: 'ecs'
+              awslogs-region: !Ref AWS::Region
+      Tags:
+        - Key: ResourceName
+          Value: !Sub AWSTransform-Bookstore-Web-Task-Definition-686569-326a14
+        - Key: CreatedFor
+          Value: AWSTransform
+
+  ECSService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub AWSTransform-Bookstore-Web-Service-686569-326a14
+      Cluster: !Ref ECSClusterName
+      TaskDefinition: !Ref ECSTaskDefinition
+      DesiredCount: !Ref ECSTaskCount
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: !Split [",", !Ref SubnetIds]
+          SecurityGroups: !Split [",", !Ref SecurityGroupIds]
+      Tags:
+        - Key: ResourceName
+          Value: !Sub AWSTransform-Bookstore-Web-Service-686569-326a14
+        - Key: CreatedFor
+          Value: AWSTransform
+
+Outputs:
+  ServiceName:
+    Description: 'ECS Service Name'
+    Value: !Ref ECSService
+
+  TaskDefinitionArn:
+    Description: 'ECS Task Definition ARN'
+    Value: !Ref ECSTaskDefinition
+
+  LogGroupName:
+    Description: 'CloudWatch Log Group Name'
+    Value: !Ref CloudWatchLogGroup

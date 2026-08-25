@@ -1,0 +1,43 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS Transform ECS Deployment Infrastructure'
+
+Parameters:
+  ECSClusterName:
+    Type: String
+    Description: 'Desired name for the ECS Cluster'
+
+  KmsKeyId:
+    Type: String
+    Description: 'KMS Key Id for ECS Cluster encryption'
+    Default: ''
+
+Conditions:
+  UseCustomKmsKey: !Not [!Equals [!Ref KmsKeyId, '']]
+
+Resources:
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref ECSClusterName
+      CapacityProviders:
+        - FARGATE
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+      Configuration:
+        !If
+          - UseCustomKmsKey
+          - ManagedStorageConfiguration:
+              FargateEphemeralStorageKmsKeyId: !Ref KmsKeyId
+              KmsKeyId: !Ref KmsKeyId
+          - !Ref AWS::NoValue
+      Tags:
+        - Key: ResourceName
+          Value: !Ref ECSClusterName
+        - Key: CreatedFor
+          Value: AWSTransform
+
+Outputs:
+  ECSClusterName:
+    Description: 'ECS Cluster Name'
+    Value: !Ref ECSCluster
